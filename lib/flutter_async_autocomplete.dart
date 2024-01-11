@@ -93,6 +93,9 @@ class AsyncAutocomplete<T> extends StatefulWidget {
   /// Can be used to show or hide scrollbar of listview in overlay of field value
   final bool? thumbVisibilityScrollbar;
 
+  /// First focus will not call suggestion
+  final bool? ignoreFirstFocus;
+
   /// Creates a autocomplete widget to help you manage your suggestions
   const AsyncAutocomplete(
       {required this.asyncSuggestions,
@@ -122,7 +125,8 @@ class AsyncAutocomplete<T> extends StatefulWidget {
       this.suggestionTextStyle = const TextStyle(),
       this.suggestionBackgroundColor,
       this.debounceDuration = const Duration(milliseconds: 400),
-      this.validator})
+      this.validator,
+      this.ignoreFirstFocus})
       : assert(onChanged != null || controller != null,
             'onChanged and controller parameters cannot be both null at the same time'),
         assert(!(controller != null && initialValue != null),
@@ -139,10 +143,11 @@ class _AsyncAutocompleteState<T> extends State<AsyncAutocomplete<T>> {
   late TextEditingController _controller;
   bool _hasOpenedOverlay = false;
   bool _isLoading = false;
+  String? _error;
   OverlayEntry? _overlayEntry;
   List<T> _suggestions = [];
   Timer? _debounce;
-  String _previousAsyncSearchText = '';
+  String? _previousAsyncSearchText;
   late FocusNode _focusNode;
 
   @override
@@ -150,7 +155,13 @@ class _AsyncAutocompleteState<T> extends State<AsyncAutocomplete<T>> {
     super.initState();
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TextEditingController(text: '');
-    _controller.addListener(() => updateSuggestions(_controller.text));
+    _controller.addListener(() {
+      if (_previousAsyncSearchText == null && widget.ignoreFirstFocus == true) {
+        _previousAsyncSearchText = _controller.text;
+        return;
+      }
+      updateSuggestions(_controller.text);
+    });
     _focusNode.addListener(() {
       if (_focusNode.hasFocus)
         openOverlay();
@@ -176,6 +187,7 @@ class _AsyncAutocompleteState<T> extends State<AsyncAutocomplete<T>> {
                   offset: Offset(0.0, size.height + 5.0),
                   child: FilterableList(
                       loading: _isLoading,
+                      error: _error,
                       scrollBarController: widget.scrollBarController,
                       elevation: widget.elevation,
                       thicknessScrollbar: widget.thicknessScrollbar,
@@ -212,16 +224,26 @@ class _AsyncAutocompleteState<T> extends State<AsyncAutocomplete<T>> {
   Future<void> updateSuggestions(String input) async {
     rebuildOverlay();
     if (widget.asyncSuggestions != null) {
-      setState(() => _isLoading = true);
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
       if (_debounce != null && _debounce!.isActive) _debounce!.cancel();
       _debounce = Timer(widget.debounceDuration, () async {
         // if (input.isEmpty) {
-        _suggestions = await widget.asyncSuggestions!(input) as List<T>;
+        try {
+          _suggestions = await widget.asyncSuggestions!(input);
+        } catch (e) {
+          setState(() {
+            _error = e.toString();
+          });
+        }
         setState(() {
           _isLoading = false;
           _previousAsyncSearchText = input;
         });
         rebuildOverlay();
+
         // }
       });
     }
@@ -298,6 +320,7 @@ class FilterableList<T> extends StatelessWidget {
   final TextStyle suggestionTextStyle;
   final Color? suggestionBackgroundColor;
   final bool loading;
+  final String? error;
   final bool? thumbVisibilityScrollbar;
   final ScrollController? scrollBarController;
   final Widget Function(T data) suggestionBuilder;
@@ -315,6 +338,7 @@ class FilterableList<T> extends StatelessWidget {
       this.suggestionTextStyle = const TextStyle(),
       this.suggestionBackgroundColor,
       this.loading = false,
+      this.error,
       this.progressIndicatorBuilder});
 
   @override
@@ -334,7 +358,8 @@ class FilterableList<T> extends StatelessWidget {
         child: Container(
           constraints: BoxConstraints(maxHeight: maxListHeight),
           child: Visibility(
-            visible: items.isNotEmpty || loading,
+            visible:
+                items.isNotEmpty || loading || (error?.isNotEmpty ?? false),
             child: Scrollbar(
               thumbVisibility: thumbVisibilityScrollbar,
               thickness: thicknessScrollbar,
@@ -343,7 +368,8 @@ class FilterableList<T> extends StatelessWidget {
                 shrinkWrap: true,
                 controller: scrollBarController ?? ScrollController(),
                 padding: const EdgeInsets.all(5),
-                itemCount: loading ? 1 : items.length,
+                itemCount:
+                    loading || (error?.isNotEmpty ?? false) ? 1 : items.length,
                 itemBuilder: (context, index) {
                   if (loading) {
                     return Container(
@@ -351,7 +377,17 @@ class FilterableList<T> extends StatelessWidget {
                         padding: EdgeInsets.all(10),
                         child: progressIndicatorBuilder!);
                   }
-    
+                  if (error?.isNotEmpty ?? false) {
+                    return Container(
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(10),
+                        child: Text(
+                          error!,
+                          style:
+                              const TextStyle(color: Colors.red, fontSize: 14),
+                        ));
+                  }
+
                   return InkWell(
                       child: suggestionBuilder(items[index]),
                       onTap: () => onItemTapped(items[index]));
